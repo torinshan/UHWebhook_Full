@@ -1,15 +1,21 @@
-FROM rocker/r-ver:latest
+# Base image with specific R version (using the working version)
+FROM rocker/r-ver:4.5.1
 
 # Install system dependencies including curl for health checks
 RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libssl-dev \
     libxml2-dev \
+    libz-dev \
+    libsodium-dev \
+    build-essential \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install R packages
-RUN R -e "install.packages(c('plumber', 'jsonlite', 'data.table', 'tidyverse', 'httr', 'catapultR', 'lubridate', 'openxlsx'), repos='https://cran.rstudio.com')"
+# Install R packages in stages for better reliability
+RUN R -e "install.packages(c('plumber', 'jsonlite', 'data.table'), repos = 'https://cran.rstudio.com')"
+RUN R -e "install.packages(c('tidyverse', 'httr', 'lubridate'), repos = 'https://cran.rstudio.com')"
+RUN R -e "install.packages(c('catapultR', 'openxlsx'), repos = 'https://cran.rstudio.com')"
 
 # Create app directory
 WORKDIR /app
@@ -44,5 +50,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the webhook server
-CMD ["Rscript", "run_webhook.R"]
+# Run the webhook server (using the working pattern)
+CMD ["R", "-e", "source('run_webhook.R')"]
