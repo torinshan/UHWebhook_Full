@@ -1,7 +1,7 @@
-# Base image with specific R version (using the working version)
+# Base image with R (using your working version)
 FROM rocker/r-ver:4.5.1
 
-# Install system dependencies including curl for health checks
+# Install system-level libraries required by plumber, httpuv, and sodium
 RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libssl-dev \
@@ -10,45 +10,38 @@ RUN apt-get update && apt-get install -y \
     libsodium-dev \
     build-essential \
     curl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean
 
-# Install R packages in stages for better reliability
-RUN R -e "install.packages(c('plumber', 'jsonlite', 'data.table'), repos = 'https://cran.rstudio.com')"
-RUN R -e "install.packages(c('tidyverse', 'httr', 'lubridate'), repos = 'https://cran.rstudio.com')"
-RUN R -e "install.packages(c('catapultR', 'openxlsx'), repos = 'https://cran.rstudio.com')"
+# Install only the essential R packages that we know work
+RUN R -e "install.packages(c('plumber', 'jsonlite', 'data.table', 'httr'), repos = 'https://cran.rstudio.com')"
 
-# Create app directory
+# Set working directory
 WORKDIR /app
 
-# Create all necessary directories
+# Create necessary directories
 RUN mkdir -p /app/data/CSVs_Raw \
     /app/data/CSVs_Clean \
     "/app/data/Merged Files" \
     /app/logs \
     /app/Foundational_CSVs
 
-# Create foundational CSV files with realistic parameter slugs
-RUN echo "total_distance\ntotal_player_load\nmax_speed\naverage_speed\ntotal_duration\nhigh_speed_distance\nsprint_distance\nacceleration_count\ndeceleration_count\nmax_acceleration\nmax_deceleration" > /app/Foundational_CSVs/slugs_activities.csv && \
-    echo "period_distance\nperiod_player_load\nperiod_max_speed\nperiod_average_speed\nperiod_duration\nperiod_high_speed_distance\nperiod_sprint_distance\nperiod_acceleration_count\nperiod_deceleration_count" > /app/Foundational_CSVs/slugs_periods.csv
+# Create foundational CSV files
+RUN echo "total_distance\ntotal_player_load\nmax_speed" > /app/Foundational_CSVs/slugs_activities.csv && \
+    echo "period_distance\nperiod_player_load\nperiod_max_speed" > /app/Foundational_CSVs/slugs_periods.csv
 
-# Copy application files (corrected filenames to match your actual files)
+# Copy application files
 COPY openfield_webhook.R /app/openfield_webhook.R
-COPY process_new_activity.r /app/process_new_activity.R
-COPY run_webhook.R /app/run_webhook.R
-
-# Set appropriate permissions
-RUN chmod +x /app/*.R
+COPY process_new_activity_minimal.R /app/process_new_activity.R
 
 # Set environment variables
-ENV R_CONFIG_ACTIVE=production
 ENV CATAPULT_AUTH_TOKEN=""
 
-# Expose port
+# Expose the plumber API port
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the webhook server (using the working pattern)
-CMD ["R", "-e", "source('run_webhook.R')"]
+# Run the plumber API (using your working pattern)
+CMD ["R", "-e", "plumber::plumb('openfield_webhook.R')$run(host='0.0.0.0', port=8000)"]
