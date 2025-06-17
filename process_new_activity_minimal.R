@@ -125,12 +125,20 @@ process_webhook_activity <- function(raw_body) {
     error = function(e) NULL
   )
   if (is.null(payload)) stop("Invalid JSON payload")
-  aid <- payload$trigger$id
-  evt <- payload$action
-  if (evt %in% c("created", "updated")) {
-    return(process_new_activity(aid, evt))
+
+  # Extract and normalize activity_id
+  aid_raw <- payload$trigger$id
+  if (grepl("^test-trigger-id-", aid_raw)) {
+    activity_id <- sub("^test-trigger-id-", "", aid_raw)
+  } else {
+    activity_id <- aid_raw
   }
-  list(activity_id=aid, event_type=evt, success=TRUE, message="Event ignored")
+  evt <- payload$action
+
+  if (evt %in% c("created", "updated")) {
+    return(process_new_activity(activity_id, evt))
+  }
+  list(activity_id=activity_id, event_type=evt, success=TRUE, message="Event ignored")
 }
 
 #—— PLUMBER ENDPOINT —————————————————————————————————————————————————————————————
