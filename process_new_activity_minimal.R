@@ -126,19 +126,21 @@ process_webhook_activity <- function(raw_body) {
   )
   if (is.null(payload)) stop("Invalid JSON payload")
 
-  # Extract and normalize activity_id
-  aid_raw <- payload$trigger$id
-  if (grepl("^test-trigger-id-", aid_raw)) {
-    activity_id <- sub("^test-trigger-id-", "", aid_raw)
-  } else {
-    activity_id <- aid_raw
+  # Skip simulated test triggers
+  sim_flag <- !is.null(payload$trigger$simulated) && payload$trigger$simulated
+  if (sim_flag) {
+    message("Simulation trigger received, skipping fetch for id: ", payload$trigger$id)
+    return(list(activity_id=payload$trigger$id, event_type=payload$action, success=TRUE, message="Simulation ignored"))
   }
-  evt <- payload$action
 
-  if (evt %in% c("created", "updated")) {
-    return(process_new_activity(activity_id, evt))
+  # Extract activity_id (UUID expected)
+  activity_id <- payload$trigger$id
+  event_type  <- payload$action
+
+  if (event_type %in% c("created", "updated")) {
+    return(process_new_activity(activity_id, event_type))
   }
-  list(activity_id=activity_id, event_type=evt, success=TRUE, message="Event ignored")
+  list(activity_id=activity_id, event_type=event_type, success=TRUE, message="Event ignored")
 }
 
 #—— PLUMBER ENDPOINT —————————————————————————————————————————————————————————————
