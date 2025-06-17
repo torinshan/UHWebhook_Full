@@ -15,16 +15,15 @@ message("=== WEBHOOK PROCESSOR LOADED ===")
 #—— CONFIGURATION ——————————————————————————————————————————————————————————————
 cfg <- list(
   dirs = list(
-    # Local Windows path for log and data
     base         = "C:/Users/Torin/Documents/Strength and Conditioning - Jobs/API Test/Houston Test/Merged Files",
-    raw          = NULL,  # will set below
-    clean        = NULL,
-    merged       = NULL,
-    webhook_conn = NULL
+    raw          = file.path(cfg$dirs$base, "CSVs_Raw"),
+    clean        = file.path(cfg$dirs$base, "CSVs_Clean"),
+    merged       = file.path(cfg$dirs$base, "Merged Files"),
+    webhook_conn = file.path(cfg$dirs$base, "Webhook - Connected")
   ),
   files = list(
-    activities_csv = NULL,
-    log_csv        = NULL
+    activities_csv = file.path(cfg$dirs$merged, "df_activities.csv"),
+    log_csv        = file.path(cfg$dirs$webhook_conn, "webhook_processing_log.csv")
   ),
   api = list(
     base_url    = "https://connect-us.catapultsports.com/api/v6",
@@ -33,21 +32,11 @@ cfg <- list(
     backoff_sec = 1
   )
 )
-# Build directory paths
-cfg$dirs$raw          <- file.path(cfg$dirs$base, "CSVs_Raw")
-cfg$dirs$clean        <- file.path(cfg$dirs$base, "CSVs_Clean")
-cfg$dirs$merged       <- file.path(cfg$dirs$base, "Merged Files")
-cfg$dirs$webhook_conn <- file.path(cfg$dirs$base, "Webhook - Connected")
-
-# Build file paths
-cfg$files$activities_csv <- file.path(cfg$dirs$merged, "df_activities.csv")
-cfg$files$log_csv        <- file.path(cfg$dirs$webhook_conn, "webhook_processing_log.csv")
-
-# Ensure output directories exist
-lapply(cfg$dirs, function(d) dir.create(d, recursive = TRUE, showWarnings = FALSE))
+# Ensure directories exist
+lapply(cfg$dirs, function(d) dir.create(d, recursive=TRUE, showWarnings=FALSE))
 
 # Pre-built headers
-api_headers <- c(
+auth_headers <- c(
   Authorization = sprintf("Bearer %s", cfg$api$token),
   Accept        = "application/json"
 )
@@ -56,10 +45,10 @@ api_headers <- c(
 fetch_json <- function(endpoint) {
   url <- paste0(cfg$api$base_url, endpoint)
   for (i in seq_len(cfg$api$retry)) {
-    resp <- try(GET(url, add_headers(.headers = api_headers)), silent = TRUE)
-    if (inherits(resp, "response") && status_code(resp) == 200L) {
-      txt <- content(resp, as = "text", encoding = "UTF-8")
-      return(if (nzchar(txt)) fromJSON(txt, flatten = TRUE) else NULL)
+    resp <- try(GET(url, add_headers(.headers = auth_headers)), silent = TRUE)
+    if (inherits(resp, "response") && status_code(resp)==200L) {
+      txt <- content(resp, as="text", encoding="UTF-8")
+      return(if (nzchar(txt)) fromJSON(txt, flatten=TRUE) else NULL)
     }
     Sys.sleep(cfg$api$backoff_sec)
   }
@@ -68,32 +57,27 @@ fetch_json <- function(endpoint) {
 }
 
 parse_catapult_data <- function(data_list) {
-  if (is.null(data_list) || length(data_list) == 0) return(data.table())
+  if (is.null(data_list) || length(data_list)==0) return(data.table())
   DT <- setDT(data_list)
   for (col in names(DT)[sapply(DT, is.list)]) {
-    DT[, (col) := vapply(get(col), function(x) {
-      if (is.null(x) || length(x) == 0) return(NA_character_)
-      paste0(unlist(x), collapse = ", ")
-    }, FUN.VALUE = "")]  
+    DT[, (col):= vapply(get(col), function(x) {
+      if (is.null(x) || length(x)==0) return(NA_character_)
+      paste0(unlist(x), collapse=", ")
+    }, FUN.VALUE="")]
   }
-  DT[, names(DT) := lapply(.SD, as.character)]
+  DT[, names(DT):= lapply(.SD, as.character)]
   DT
 }
 
-append_csv_unique <- function(DT, file, id_col = "activity_id") {
-  if (nrow(DT) == 0) {
-    message("ℹ No new rows to append to ", basename(file)); return(FALSE)
-  }
+append_csv_unique <- function(DT, file, id_col="activity_id") {
+  if (nrow(DT)==0) return(FALSE)
   if (file.exists(file)) {
     existing <- fread(file)
-    combined <- rbind(existing, DT, fill = TRUE)
-    setkeyv(combined, id_col)
-    combined <- unique(combined)
+    combined <- unique(rbind(existing, DT, fill=TRUE), by=id_col)
   } else {
     combined <- DT
   }
   fwrite(combined, file)
-  message("✓ Wrote ", nrow(DT), " rows to ", basename(file))
   TRUE
 }
 
@@ -104,47 +88,50 @@ process_new_activity <- function(activity_id, event_type) {
 
   raw <- fetch_json(sprintf("/activities/%s", activity_id))
   if (is.null(raw)) {
-    msg <- "Fetch failed"; success <- FALSE
+    status <- list(success=FALSE, message="Fetch failed")
   } else {
     DT <- parse_catapult_data(raw)
     if ("id" %in% names(DT)) setnames(DT, "id", "activity_id")
-    if (append_csv_unique(DT, cfg$files$activities_csv)) {
-      msg <- "Processed successfully"; success <- TRUE
-    } else {
-      msg <- "Save failed"; success <- FALSE
-    }
+    ok <- append_csv_unique(DT, cfg$files$activities_csv)
+    status <- if (ok) list(success=TRUE, message="Processed successfully") else list(success=FALSE, message="Save failed")
   }
 
-  log_entry <- data.table(
+  # Log entry
+  log_dt <- data.table(
     timestamp   = format(start_time, "%Y-%m-%d %H:%M:%S"),
     activity_id = activity_id,
     event_type  = event_type,
-    success     = success,
-    message     = msg
+    success     = status$success,
+    message     = status$message
   )
-  append_csv_unique(log_entry, cfg$files$log_csv, id_col = "timestamp")
+  append_csv_unique(log_dt, cfg$files$log_csv, id_col="timestamp")
 
-  message(sprintf("<< Finished: %s", msg))
-  list(activity_id = activity_id, event_type = event_type, success = success, message = msg)
+  message(sprintf("<< Finished: %s", status$message))
+  c(list(activity_id=activity_id, event_type=event_type), status)
+}
+
+# Wrapper for webhook payload
+process_webhook_activity <- function(raw_body) {
+  payload <- tryCatch(if(is.character(raw_body)) fromJSON(raw_body) else raw_body,
+                      error=function(e) NULL)
+  if (is.null(payload)) stop("Invalid JSON payload")
+  aid <- payload$trigger$id
+  evt <- payload$action
+  if (evt %in% c("created","updated")) {
+    return(process_new_activity(aid, evt))
+  }
+  list(activity_id=aid, event_type=evt, success=TRUE, message="Event ignored")
 }
 
 #—— PLUMBER ENDPOINT —————————————————————————————————————————————————————————————
 #* @post /openfield-webhook
 #* @serializer json
 function(req, res) {
-  payload <- tryCatch(
-    if (is.character(req$postBody)) fromJSON(req$postBody) else req$postBody,
-    error = function(e) NULL
-  )
-  if (is.null(payload)) {
-    return(list(success=FALSE, message="Invalid JSON payload"))
-  }
-
-  activity_id <- payload$trigger$id
-  event_type  <- payload$action
-
-  if (event_type %in% c("created", "updated")) {
-    return(process_new_activity(activity_id, event_type))
-  }
-  list(activity_id = activity_id, event_type = event_type, success = TRUE, message = "Event ignored")
+  tryCatch({
+    process_webhook_activity(req$postBody)
+  }, error=function(e){
+    message("Error processing activity: ", e$message)
+    res$status <- 500
+    list(success=FALSE, message=e$message)
+  })
 }
